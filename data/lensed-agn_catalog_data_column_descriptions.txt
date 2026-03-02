@@ -1,0 +1,71 @@
+# -----------------------------------------------------------------------------------------------------------------------------
+# --- System Properties ---
+# 'z_S', 'z_D', 'theta_E_arcsec', 
+# 'max_time_delay_days', 
+# 'num_images', 
+
+# --- Point Source (AGN) ---
+# 'x_ps_position_arcsec',
+# 'y_ps_position_arcsec',
+# 'unlensed_ps_mag_<band>'                       # (magnitude of the unlensed quasar in each band)
+# 'faintest_image_ps_mag_<band>'                 # (magnitude of the faintest lensed quasar image in each band)
+# 'second_brightest_image_ps_mag_<band>'         # (magnitude of the second brightest lensed quasar image in each band)
+# 'brightest_image_ps_mag_<band>'                # (magnitude of the brightest lensed quasar image in each band)
+# 'lensed_ps_mag_<band>_<image#>'                # (magnitudes of the lensed quasar images in each band)
+# 'time_delay_days_<image#>',                    # (list of time delays for all images with respect to the straight line arrival time)
+# 'ps_magnification_<image#>',                   # (magnification of each lensed quasar image)
+# 'x_ps_image_positions_arcsec_<image#>',
+# 'y_ps_image_positions_arcsec_<image#>',
+# 'black_hole_mass_exponent',                    # (in units of log_10 M_sun, fetched directly from agn_class kwargs)
+# 'agn_disk_eddington_ratio',                    # (fetched directly from agn_class kwargs)
+# 'black_hole_spin',                             # (dimensionless spin parameter of the black hole)
+# 'agn_disk_inclination_angle',                  # (inclination of the accretion disk w.r.t. observer in degrees)
+
+# --- Host Galaxy (Source) Light [SINGLE SERSIC] ---
+# 'x_host_position_arcsec',
+# 'y_host_position_arcsec',
+# 'unlensed_host_mag_<band>' for all bands,
+# 'lensed_host_mag_<band>' for all bands,
+# 'host_light_R_eff_arcsec',
+# 'host_light_n_sersic',
+# 'host_light_e1',
+# 'host_light_e2',
+# 'host_light_ellipticity',            # (computes as sqrt(e1^2 + e2^2))
+# 'host_light_axis_ratio',             # (q_host = (1 - e_host)/(1 + e_host))
+# 'host_light_position_angle_deg',     # (computes as 0.5 * arctan2(e2, e1))
+
+# --- Deflector Light (Lens Galaxy) [SINGLE SERSIC] ---
+# 'deflector_mag_<band>' for all bands,
+# 'deflector_light_R_eff_arcsec',
+# 'deflector_light_n_sersic',
+# 'deflector_light_e1',
+# 'deflector_light_e2',
+# 'deflector_light_ellipticity',        # (computes as sqrt(e1^2 + e2^2))
+# 'deflector_light_position_angle_deg', # (allows light/mass misalignment, computed as 0.5 * arctan2(e2, e1))
+# 'deflector_light_axis_ratio',         # (q_light = (1 - e_light)/(1 + e_light))
+# 'x_deflector_light_position_arcsec',  # (if light center differs from mass center)
+# 'y_deflector_light_position_arcsec',  # (if light center differs from mass center)
+
+# --- Deflector Mass (Lens Galaxy) [PEMD + SHEAR] ---
+# 'x_deflector_mass_position_arcsec',
+# 'y_deflector_mass_position_arcsec',
+# 'deflector_stellar_mass',
+# 'deflector_pl_slope',                 # (gamma_pl)
+# 'deflector_velocity_dispersion',      # (sigma_v_D)
+# 'deflector_mass_e1',                  # (e1_mass)
+# 'deflector_mass_e2',                  # (e2_mass)
+# 'deflector_mass_ellipticity',         # (e_mass = sqrt(e1_mass^2 + e2_mass^2))
+# 'deflector_mass_axis_ratio',          # (q_mass = (1 - e_mass)/(1 + e_mass))
+# 'deflector_mass_position_angle_deg',  # (phi_mass = 0.5 * arctan2(e2_mass, e1_mass))
+# 'external_shear_gamma1',              # (gamma1 = gamma_ext * cos(2*phi_ext))
+# 'external_shear_gamma2',              # (gamma2 = gamma_ext * sin(2*phi_ext))
+# 'external_shear_amplitude',           # (gamma_ext = sqrt(gamma1^2 + gamma2^2))
+# 'external_shear_position_angle_deg',  # (phi_ext = 0.5 * arctan2(gamma2, gamma1))
+# 'external_convergence',               # (kappa_ext)
+
+# --- Microlensing Parameters (Per Image) ---
+# 'kappa_star_<image#>'                 # (Stellar convergence computed at the image position, defaults to i-band light profile)
+# 'kappa_tot_<image#>'                  # (Total convergence computed at the image position)
+# 'shear_<image#>'                      # (Total shear amplitude computed at the image position)
+# 'shear_angle_<image#>'                # (Shear angle computed at the image position)
+# -----------------------------------------------------------------------------------------------------------------------------
