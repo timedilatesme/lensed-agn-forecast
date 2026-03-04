@@ -23,3 +23,11 @@ This repository uses [`slsim`](https://github.com/LSST-strong-lensing/slsim) to 
 ![Roman Wide Tier Montage](figures/montage_Roman%20Wide%20Tier.png)
 
 ![Roman NANCY Montage](figures/montage_Roman%20NANCY.png)
+
+## Plots of different samples
+
+![LSST Roman Comparison](figures/corner_lsst_vs_roman_med_wide_combined.png)
+
+![Roman Medium vs Wide](figures/corner_roman_med_vs_wide.png)
+
+![Roman Medium vs NANCY](figures/corner_roman_nancy_vs_medium2029.png)
