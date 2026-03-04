@@ -156,12 +156,11 @@ def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5
         table_dict["y_ps_position_arcsec"].append(y_ps)
         
         # AGN property extraction
-        ps_class._init_agn_class()
-        agn_kwargs = ps_class.agn_class.kwargs_model
+        agn_kwargs = ps_class.source_dict
         log_m_bh = agn_kwargs.get('black_hole_mass_exponent', np.nan)
         f_edd = agn_kwargs.get('eddington_ratio', np.nan)
-        spin = agn_kwargs.get('black_hole_spin', np.nan)             # Spin
-        inc_angle = agn_kwargs.get('inclination_angle', np.nan)      # Inclination
+        spin = agn_kwargs.get('black_hole_spin', np.nan)            
+        inc_angle = agn_kwargs.get('inclination_angle', np.nan)
             
         table_dict["black_hole_mass_exponent"].append(log_m_bh)
         table_dict["agn_disk_eddington_ratio"].append(f_edd)
