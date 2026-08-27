@@ -10,6 +10,22 @@ import corner
 ## DATA EXTRACTION UTILITIES
 #################################################################################################################
 
+def _sersic_index(light_object):
+    """Sersic index of a light profile, unwrapping the ExtendedSource wrapper if present."""
+    for _ in range(3):
+        if light_object is None:
+            break
+        if hasattr(light_object, "_n_sersic"):
+            return light_object._n_sersic
+        light_object = getattr(light_object, "_extended_source", None)
+    return np.nan
+
+
+def _deflector_pl_slope(deflector):
+    """Logarithmic slope of the deflector mass profile (2 = isothermal)."""
+    return getattr(getattr(deflector.mass, "_mass", None), "_gamma_pl", np.nan)
+
+
 # See the file named "data_column_descriptions.txt" for descriptions of each column being extracted below.
 def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5):
     """
@@ -172,7 +188,7 @@ def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5
         table_dict["x_host_position_arcsec"].append(x_host)
         table_dict["y_host_position_arcsec"].append(y_host)
         table_dict["host_light_R_eff_arcsec"].append(es_class.angular_size)
-        table_dict["host_light_n_sersic"].append(es_class._n_sersic)
+        table_dict["host_light_n_sersic"].append(_sersic_index(es_class))
         
         e1_host, e2_host = es_class.ellipticity
         e_host = np.sqrt(e1_host**2 + e2_host**2)
@@ -210,10 +226,7 @@ def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5
         table_dict["deflector_mass_axis_ratio"].append(q_mass)
         table_dict["deflector_mass_position_angle_deg"].append(phi_mass)
         
-        gamma_pl = np.nan
-        if hasattr(deflector_class, 'halo_properties'):
-             gamma_pl = deflector_class.halo_properties.get("gamma_pl", np.nan)
-        table_dict["deflector_pl_slope"].append(gamma_pl)
+        table_dict["deflector_pl_slope"].append(_deflector_pl_slope(deflector_class))
         
         table_dict["deflector_stellar_mass"].append(lens_system.deflector_stellar_mass())
         table_dict["x_deflector_mass_position_arcsec"].append(x_pos_deflector)
@@ -234,10 +247,7 @@ def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5
         table_dict["deflector_light_position_angle_deg"].append(phi_light)
         table_dict["deflector_light_R_eff_arcsec"].append(lens_system.deflector.angular_size_light)
         
-        n_sersic = np.nan
-        if hasattr(deflector_class._deflector, '_deflector_dict'):
-            n_sersic = deflector_class._deflector._deflector_dict.get("n_sersic", np.nan)
-        table_dict["deflector_light_n_sersic"].append(n_sersic)
+        table_dict["deflector_light_n_sersic"].append(_sersic_index(deflector_class.light.extended_source))
 
         # --- Image Properties Setup ---
         num_images = lens_system.image_number[source_index]
@@ -645,3 +655,101 @@ def plot_survey_corner(survey_data, keys_to_plot, params, latex_labels, range_va
 #################################################################################################################
 ## ETC.
 #################################################################################################################
+#################################################################################################################
+## EUCLID RGB MONTAGE UTILITIES
+#################################################################################################################
+from slsim.Util.euclid_rgb_util import (
+    euclid_rgb_from_image_list,
+    euclid_nisp_num_pix_from_vis,
+    compute_euclid_band_limits_from_image_lists,
+)
+
+EUCLID_RGB_BANDS = ["VIS", "Y", "J", "H"]
+
+
+def simulate_euclid_band_images(lens_class, bands=EUCLID_RGB_BANDS, num_pix_vis=50,
+                                add_noise=True, with_point_source=True,
+                                with_extended_source=True, with_deflector=True):
+    """Simulate Euclid VIS/NISP images of one lens over a common field of view.
+
+    VIS (0.1"/pix) and NISP (0.3"/pix) have different pixel scales, so the NISP
+    pixel count is derived from the VIS one to cover the same sky area.
+
+    Returns a dict mapping band name -> image array.
+    """
+    num_pix_nisp = euclid_nisp_num_pix_from_vis(num_pix_vis)
+    images = {}
+    for band in bands:
+        images[band] = simulate_image(
+            lens_class=lens_class,
+            band=band,
+            num_pix=num_pix_vis if band == "VIS" else num_pix_nisp,
+            add_noise=add_noise,
+            observatory="Euclid",
+            with_point_source=with_point_source,
+            with_source=with_extended_source,
+            with_deflector=with_deflector,
+        )
+    return images
+
+
+def plot_euclid_montage(lenses, number_to_plot=100, num_cols=10, num_pix_vis=50,
+                        colour="VIS_WEIGHTED_Y_J_H", stretch="mtf",
+                        uniform_scaling=True, add_noise=True,
+                        with_point_source=True, with_extended_source=True, with_deflector=True,
+                        plot_title=None, random_seed=None, **rgb_kwargs):
+    """Montage of Euclid Q1-style RGB cutouts built from VIS + Y/J/H images.
+
+    With ``uniform_scaling=True`` the per-band black/white limits are measured
+    once over the whole sample so all panels share the same stretch.
+    """
+    if len(lenses) > number_to_plot:
+        rng = np.random.default_rng(random_seed)
+        idxs = rng.choice(len(lenses), size=number_to_plot, replace=False)
+        lenses_to_plot = [lenses[i] for i in idxs]
+    else:
+        lenses_to_plot = list(lenses)
+
+    if len(lenses_to_plot) == 0:
+        print("No lenses to plot.")
+        return None
+
+    image_sets = [
+        simulate_euclid_band_images(
+            lens_class, num_pix_vis=num_pix_vis, add_noise=add_noise,
+            with_point_source=with_point_source,
+            with_extended_source=with_extended_source,
+            with_deflector=with_deflector,
+        )
+        for lens_class in lenses_to_plot
+    ]
+
+    band_limits = None
+    if uniform_scaling:
+        band_limits = compute_euclid_band_limits_from_image_lists(
+            {band: [imgs[band] for imgs in image_sets] for band in EUCLID_RGB_BANDS}
+        )
+
+    rgb_images = [
+        euclid_rgb_from_image_list(
+            [imgs[band] for band in EUCLID_RGB_BANDS],
+            colour=colour, stretch=stretch, band_limits=band_limits, **rgb_kwargs
+        )
+        for imgs in image_sets
+    ]
+
+    num_rows = int(np.ceil(len(rgb_images) / num_cols))
+    fig, axes = plt.subplots(num_rows, num_cols, figsize=(num_cols, num_rows))
+    for i, ax in enumerate(np.atleast_1d(axes).flat):
+        if i < len(rgb_images):
+            ax.imshow(rgb_images[i], origin="lower")
+            ax.axis("off")
+        else:
+            ax.remove()
+
+    plt.tight_layout()
+    if plot_title:
+        plt.suptitle(plot_title, fontsize=16)
+        plt.subplots_adjust(top=0.92)
+
+    return fig
