@@ -372,6 +372,17 @@ def make_multiband_images_and_rgb_image(lens_class, bands=['g', 'r', 'i', 'z', '
                 with_source=with_source,
                 with_deflector=with_deflector,
             )
+        if observatory == "Euclid":    
+            simulated_lens_image = simulate_image(
+                lens_class=lens_class,
+                band=band,
+                num_pix=num_pix,
+                add_noise=add_noise,
+                observatory=observatory,
+                with_point_source=with_point_source,
+                with_source=with_source,
+                with_deflector=with_deflector,
+            )
         multiband_image_selected_lens[band] = simulated_lens_image
 
     # Create RGB image using specified bands
@@ -632,6 +643,20 @@ def plot_survey_corner(survey_data, keys_to_plot, params, latex_labels, range_va
         y_pos = text_y_start - (idx * text_y_step)
         figure.text(text_x, y_pos, info_str, fontsize=14, color='black',
                     bbox=dict(facecolor='white', alpha=0.8, edgecolor='black'))
+
+    # --- Rescale Diagonal 1D Histograms ---
+    # Passing `range` makes corner force the diagonal y-limits on every call, so the
+    # last survey plotted would clip the taller histograms of the earlier ones.
+    n_params = len(params)
+    diag_axes = np.array(figure.axes[:n_params ** 2]).reshape((n_params, n_params))
+    for i in range(n_params):
+        ax = diag_axes[i, i]
+        heights = [np.nanmax(p.get_path().vertices[:, 1]) for p in ax.patches
+                   if len(p.get_path().vertices) > 0]
+        heights += [np.nanmax(line.get_ydata()) for line in ax.lines
+                    if len(line.get_ydata()) > 0]
+        if heights:
+            ax.set_ylim(0, 1.1 * max(heights))
 
     # --- Increase Tick Sizes ---
     for ax in figure.get_axes():
