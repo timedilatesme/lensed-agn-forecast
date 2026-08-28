@@ -149,8 +149,8 @@ def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5
         # Access internal classes
         source_class = lens_system.source(source_index)
         deflector_class = lens_system.deflector
-        ps_class = source_class._source._point_source
-        es_class = source_class._source._extended_source
+        ps_class = source_class.point_source
+        es_class = source_class.extended_source
         
         # --- System ---
         table_dict["z_S"].append(lens_system.source_redshift_list[source_index])
@@ -184,17 +184,27 @@ def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5
         table_dict["agn_disk_inclination_angle"].append(inc_angle)
 
         # --- Host Galaxy (Source) Light [SERSIC] ---
-        x_host, y_host = es_class.extended_source_position
+        if es_class is not None:
+            x_host, y_host = es_class.extended_source_position
+            
+            e1_host, e2_host = es_class.ellipticity
+            e_host = np.sqrt(e1_host**2 + e2_host**2)
+            q_host = (1 - e_host) / (1 + e_host)
+            phi_host = 0.5 * np.degrees(np.arctan2(e2_host, e1_host))
+            angular_size_host = es_class.angular_size
+        
+        else:
+            x_host, y_host = np.nan, np.nan
+            e1_host, e2_host = np.nan, np.nan
+            e_host = np.nan
+            q_host = np.nan
+            phi_host = np.nan
+            angular_size_host = np.nan
+
         table_dict["x_host_position_arcsec"].append(x_host)
         table_dict["y_host_position_arcsec"].append(y_host)
-        table_dict["host_light_R_eff_arcsec"].append(es_class.angular_size)
+        table_dict["host_light_R_eff_arcsec"].append(angular_size_host)
         table_dict["host_light_n_sersic"].append(_sersic_index(es_class))
-        
-        e1_host, e2_host = es_class.ellipticity
-        e_host = np.sqrt(e1_host**2 + e2_host**2)
-        q_host = (1 - e_host) / (1 + e_host)
-        phi_host = 0.5 * np.degrees(np.arctan2(e2_host, e1_host))
-        
         table_dict["host_light_e1"].append(e1_host)
         table_dict["host_light_e2"].append(e2_host)
         table_dict["host_light_ellipticity"].append(e_host)
@@ -282,8 +292,13 @@ def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5
             table_dict[f"second_brightest_image_ps_mag_{band}"].append(second_brightest_image_ps_mag)
             table_dict[f"brightest_image_ps_mag_{band}"].append(brightest_image_ps_mag)
 
-            unlensed_host_mag = lens_system.extended_source_magnitude(band=band, lensed=False)[source_index]
-            lensed_host_mag = lens_system.extended_source_magnitude(band=band, lensed=True)[source_index]
+            if es_class is not None:
+                unlensed_host_mag = lens_system.extended_source_magnitude(band=band, lensed=False)[source_index]
+                lensed_host_mag = lens_system.extended_source_magnitude(band=band, lensed=True)[source_index]
+            else:
+                unlensed_host_mag = np.nan
+                lensed_host_mag = np.nan
+
             table_dict[f"unlensed_host_mag_{band}"].append(unlensed_host_mag)
             table_dict[f"lensed_host_mag_{band}"].append(lensed_host_mag)
 
@@ -547,7 +562,7 @@ def plot_survey_corner(survey_data, keys_to_plot, params, latex_labels, range_va
         
         num_doubles = len(cat_doubles)
         num_quads = len(cat_quads)
-        total_lenses = num_doubles + num_quads
+        total_lenses = len(catalog)
         q_frac = num_quads / total_lenses if total_lenses > 0 else 0.0
 
         if separate_quads_doubles:
