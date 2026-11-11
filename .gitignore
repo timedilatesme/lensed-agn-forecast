@@ -179,3 +179,8 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+# Large cached comparison catalogs (downloaded, not versioned)
+data/dr16q_prop_*.fits.gz
+data/dr16q_*.fits
+data/hosts_*deg2.fits
+data/shen2011_dr7.fits

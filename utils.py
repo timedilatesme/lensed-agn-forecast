@@ -1,3 +1,7 @@
+import multiprocessing
+import os
+from concurrent.futures import ProcessPoolExecutor
+
 import numpy as np
 from astropy.table import Table
 from slsim.ImageSimulation.image_simulation import simulate_image, rgb_image_from_image_list
@@ -9,6 +13,111 @@ import corner
 #################################################################################################################
 ## DATA EXTRACTION UTILITIES
 #################################################################################################################
+# Column names and their meaning: data/lensed-agn_catalog_data_column_descriptions.txt
+
+# References for the relations below:
+#   Auger et al. (2010), ApJ 724, 511, arXiv:1007.2880 (SLACS X)
+#   Suberlak, Ivezic & MacLeod (2021), ApJ 907, 96, arXiv:2012.06524
+#   MacLeod et al. (2010), ApJ 721, 1014, arXiv:1004.0276
+#   Burke et al. (2021), Science 373, 789, arXiv:2108.05389
+#   Oguri & Marshall (2010), MNRAS 405, 2579, arXiv:1001.2037
+
+# Auger et al. (2010), Table 2, fit without intrinsic scatter, Chabrier IMF:
+# log10(sigma / km s^-1) = a log10(M* / 1e11 Msun) + b
+AUGER10_SIGMA_MSTAR = (0.24, 2.32)
+
+# DRW scaling relations, log10 f = A + B log10(lambda_rest / 4000 A) + C (M_i + 23) + D log10(M_BH / 1e9 Msun),
+# with tau in rest-frame days and SF_inf in mag: Suberlak et al. (2021) and MacLeod et al. (2010, eq. 7, mean over
+# bands), coefficients as adopted in slagn-adp. Not yet checked against the papers: the table they come from and
+# whether the fits use M_i K-corrected to z=0 or z=2. SLSim's M_i is M_i(z=2), 0.596 mag brighter than M_i(z=0)
+# (Richards et al. 2006), which would shift log SF_inf by about C * 0.6 ~ 0.07 dex.
+VARIABILITY_RELATIONS = {
+    "suberlak21": {"tau": (2.597, 0.17, 0.035, 0.141), "sf_inf": (-0.476, -0.479, 0.118, 0.118)},
+    "macleod10": {"tau": (2.4, 0.17, 0.03, 0.21), "sf_inf": (-0.51, -0.479, 0.131, 0.18)},
+}
+# Burke et al. (2021): tau_rest = 107 d (M_BH / 1e8 Msun)^0.38
+BURKE21_TAU = (107.0, 0.38)
+# Scatter of log tau and log SF_inf about the Suberlak et al. (2021) mean at fixed (M_BH, M_i, z). Not a published
+# value: MacLeod et al. (2010)'s joint i-band Gaussian conditioned on (M_BH, M_i, z), less their fitting-error share.
+VARIABILITY_SCATTER = {"tau_dex": 0.15, "sf_inf_dex": 0.04, "correlation": 0.16}
+REFERENCE_ANGSTROM = 4000.0
+
+BAND_FILTERS = {
+    **{band: f"lsst2016-{band}" for band in "ugrizy"},
+    **{band: f"Roman-{band}" for band in ["F062", "F087", "F106", "F129", "F158", "F184", "F146", "F213"]},
+    **{band: f"Euclid-{band}" for band in ["VIS", "Y", "J", "H"]},
+}
+
+
+def band_effective_wavelengths(bands):
+    """Effective wavelength [Angstrom] of each band's speclite filter."""
+    import speclite.filters
+    from slsim.Pipelines import roman_speclite
+
+    roman_speclite.configure_roman_filters()
+    return {band: float(speclite.filters.load_filter(BAND_FILTERS[band]).effective_wavelength.value)
+            for band in bands}
+
+
+def stellar_mass_from_vel_disp(vel_disp):
+    """Chabrier M* implied by sigma through the Auger et al. (2010, Table 2) sigma-M* relation, inverted."""
+    a, b = AUGER10_SIGMA_MSTAR
+    return 1e11 * 10 ** ((np.log10(vel_disp) - b) / a)
+
+
+def _variability_mean(relation, quantity, rest_angstrom, M_i, log_m_bh):
+    a, b, c, d = VARIABILITY_RELATIONS[relation][quantity]
+    return a + b * np.log10(rest_angstrom / REFERENCE_ANGSTROM) + c * (M_i + 23.0) + d * (log_m_bh - 9.0)
+
+
+def assign_agn_properties(quasars, bands, seed=None, max_inclination_deg=60.0):
+    """Add the AGN properties SLSim does not draw to a host-matched quasar catalog, one draw per quasar.
+
+    Disk inclination is isotropic (uniform in cos i) up to ``max_inclination_deg``, an assumption for type-1
+    (unobscured) AGN in the unified model (Urry & Padovani 1995, PASP 107, 803), not a fitted relation. The disk
+    position angle is uniform and the spin is 0. The DRW damping timescale and SF_inf are drawn jointly about the
+    Suberlak et al. (2021) relation at rest-frame 4000 A and scaled to each band with its wavelength dependence;
+    the MacLeod et al. (2010) and Burke et al. (2021) means are kept for comparison.
+    The columns travel with each quasar into the SLSim source objects, so every lens of a quasar shares them.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(quasars)
+    quasars["inclination_angle"] = np.degrees(
+        np.arccos(rng.uniform(np.cos(np.radians(max_inclination_deg)), 1.0, n))
+    )
+    quasars["agn_disk_position_angle_deg"] = rng.uniform(0.0, 180.0, n)
+    quasars["black_hole_spin"] = np.zeros(n)
+
+    M_i = np.asarray(quasars["M_i"], dtype=float)
+    log_m_bh = np.asarray(quasars["black_hole_mass_exponent"], dtype=float)
+    z = np.asarray(quasars["z"], dtype=float)
+    for relation in VARIABILITY_RELATIONS:
+        for quantity in ("tau", "sf_inf"):
+            quasars[f"log10_{quantity}_{relation}"] = _variability_mean(
+                relation, quantity, REFERENCE_ANGSTROM, M_i, log_m_bh
+            )
+    quasars["log10_tau_burke21"] = np.log10(BURKE21_TAU[0]) + BURKE21_TAU[1] * (log_m_bh - 8.0)
+
+    s = VARIABILITY_SCATTER
+    cross = s["correlation"] * s["tau_dex"] * s["sf_inf_dex"]
+    scatter = rng.multivariate_normal([0.0, 0.0], [[s["tau_dex"] ** 2, cross], [cross, s["sf_inf_dex"] ** 2]], n)
+    quasars["tau_rest_days"] = 10 ** (np.asarray(quasars["log10_tau_suberlak21"]) + scatter[:, 0])
+    quasars["sf_inf_mag"] = 10 ** (np.asarray(quasars["log10_sf_inf_suberlak21"]) + scatter[:, 1])
+    for band, wavelength in band_effective_wavelengths(bands).items():
+        shift = _variability_mean("suberlak21", "sf_inf", wavelength / (1 + z), M_i, log_m_bh) - np.asarray(
+            quasars["log10_sf_inf_suberlak21"]
+        )
+        quasars[f"sf_inf_mag_{band}"] = np.asarray(quasars["sf_inf_mag"]) * 10**shift
+    quasars["break_timescale_days"] = 2 * np.pi * np.asarray(quasars["tau_rest_days"]) * (1 + z)
+    return quasars
+
+
+AGN_DRAWN_COLUMNS = [
+    "agn_disk_position_angle_deg", "tau_rest_days", "sf_inf_mag",
+    "log10_tau_suberlak21", "log10_sf_inf_suberlak21", "log10_tau_macleod10", "log10_sf_inf_macleod10",
+    "log10_tau_burke21", "break_timescale_days",
+]
+
 
 def _sersic_index(light_object):
     """Sersic index of a light profile, unwrapping the ExtendedSource wrapper if present."""
@@ -21,335 +130,241 @@ def _sersic_index(light_object):
     return np.nan
 
 
+def _agn_parameter(point_source, name):
+    """SLSim keeps the AGN parameters as private Quasar attributes; fall back to the source dictionary."""
+    value = getattr(point_source, f"_{name}", None)
+    if value is None:
+        value = point_source.source_dict.get(name, np.nan)
+    return np.nan if value is None else value
+
+
 def _deflector_pl_slope(deflector):
     """Logarithmic slope of the deflector mass profile (2 = isothermal)."""
     return getattr(getattr(deflector.mass, "_mass", None), "_gamma_pl", np.nan)
 
 
-# See the file named "data_column_descriptions.txt" for descriptions of each column being extracted below.
-def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5):
-    """
-    Extracts properties from a list of lens objects and returns an Astropy Table.
+def _shape(e1, e2):
+    """Ellipticity, axis ratio and position angles (SLSim frame, lenstronomy's (-e1, e2) frame) from e1, e2."""
+    e = np.hypot(e1, e2)
+    return e, (1 - e) / (1 + e), 0.5 * np.degrees(np.arctan2(e2, e1)), 0.5 * np.degrees(np.arctan2(e2, -e1))
 
-    Parameters
-    ----------
-    lens_objects : list
-        A list of lens system objects.
-    all_bands : list of str, optional
-        List of photometric bands to extract magnitudes for. 
-        Defaults to ['g', 'r', 'i', 'z', 'y'].
-    max_num_images : int, optional
-        Maximum number of images to account for in columns (e.g., 4 for quads). Defaults to 5.
 
-    Returns
-    -------
-    astropy.table.Table
-        A table containing all extracted properties.
-    """
-    
-    # Default bands if none provided
-    if all_bands is None:
-        all_bands = ['g', 'r', 'i', 'z', 'y']
+def _slots(values, count):
+    out = np.full(count, np.nan)
+    values = np.asarray(values, dtype=float)[:count]
+    out[: len(values)] = values
+    return out
 
-    # -------------------------------------------------------------------------
-    # Initialize table_dict
-    # -------------------------------------------------------------------------
-    table_dict = {
-        # --- System Properties ---
-        "z_S": [],
-        "z_D": [],
-        "theta_E_arcsec": [],
-        "max_time_delay_days": [],
-        "num_images": [],
 
-        # --- Point Source (AGN) - Single Values ---
-        "x_ps_position_arcsec": [],
-        "y_ps_position_arcsec": [],
-        "black_hole_mass_exponent": [],
-        "agn_disk_eddington_ratio": [],
-        "black_hole_spin": [],          # Spin
-        "agn_disk_inclination_angle": [],        # Inclination
+def om10_selected(table, band="i", limit=23.3, min_separation_arcsec=0.5, min_flux_ratio=0.1, max_num_images=5):
+    """Oguri & Marshall (2010, Section 2.2) selection: the second-brightest image of a double or triple (with a flux ratio
+    of at least 0.1 for doubles) or the third-brightest of a quad brighter than ``limit``, separation >= 0.5"."""
+    n_images = np.asarray(table["num_images"])
+    faint = np.where(n_images >= 4, table[f"third_brightest_image_ps_mag_{band}"],
+                     table[f"second_brightest_image_ps_mag_{band}"])
+    abs_mu = np.abs(np.stack([np.asarray(table[f"ps_magnification_{k}"], dtype=float)
+                              for k in range(1, max_num_images + 1)]))
+    flux_ratio = np.nanmin(abs_mu, axis=0) / np.nanmax(abs_mu, axis=0)
+    return ((faint <= limit) & (np.asarray(table["max_image_separation_arcsec"]) >= min_separation_arcsec)
+            & ((n_images != 2) | (flux_ratio >= min_flux_ratio)))
 
-        # --- Host Galaxy (Source) Light [SINGLE SERSIC] ---
-        "x_host_position_arcsec": [],
-        "y_host_position_arcsec": [],
-        "host_light_R_eff_arcsec": [],
-        "host_light_n_sersic": [],
-        "host_light_e1": [],
-        "host_light_e2": [],
-        "host_light_ellipticity": [],
-        "host_light_axis_ratio": [],
-        "host_light_position_angle_deg": [],
 
-        # --- Deflector Light (Lens Galaxy) [SINGLE SERSIC] ---
-        "deflector_light_R_eff_arcsec": [],
-        "deflector_light_n_sersic": [],
-        "deflector_light_e1": [],
-        "deflector_light_e2": [],
-        "deflector_light_ellipticity": [],
-        "deflector_light_axis_ratio": [],
-        "deflector_light_position_angle_deg": [],
-        "x_deflector_light_position_arcsec": [],
-        "y_deflector_light_position_arcsec": [],
+def _lens_row(lens_system, all_bands, max_num_images, microlensing_band):
+    source_class = lens_system.source(0)
+    deflector_class = lens_system.deflector
+    ps_class = source_class.point_source
+    es_class = source_class.extended_source
+    agn = ps_class.source_dict
+    _, mass_kwargs = lens_system.deflector_mass_model_lenstronomy()
+    _, light_kwargs = lens_system.deflector_light_model_lenstronomy(band=None)
 
-        # --- Deflector Mass (Lens Galaxy) [PEMD + SHEAR] ---
-        "x_deflector_mass_position_arcsec": [],
-        "y_deflector_mass_position_arcsec": [],
-        "deflector_stellar_mass": [],
-        "deflector_pl_slope": [],               
-        "deflector_velocity_dispersion": [],
-        "deflector_mass_e1": [],    
-        "deflector_mass_e2": [],
-        "deflector_mass_ellipticity": [],        
-        "deflector_mass_axis_ratio": [],         
-        "deflector_mass_position_angle_deg": [], 
-        "external_shear_gamma1": [],              
-        "external_shear_gamma2": [],
-        "external_shear_amplitude": [],          
-        "external_shear_position_angle_deg": [], 
-        "external_convergence": [],              
+    # SLSim orders the images by arrival time; every per-image array below shares that order
+    x_images, y_images = (np.asarray(v, dtype=float) for v in lens_system.point_source_image_positions()[0])
+    magnifications = np.asarray(lens_system.point_source_magnification()[0], dtype=float)
+    arrival_times = np.asarray(lens_system.point_source_arrival_times()[0], dtype=float)
+    separations = np.hypot(x_images[:, None] - x_images[None], y_images[:, None] - y_images[None])
+
+    row = {
+        "lens_id": lens_system.generate_id(),
+        "z_S": lens_system.source_redshift_list[0],
+        "z_D": lens_system.deflector_redshift,
+        "theta_E_arcsec": lens_system.einstein_radius[0],
+        "theta_E_lens_model_arcsec": mass_kwargs[0].get("theta_E", np.nan),
+        "max_time_delay_days": np.ptp(arrival_times) if len(arrival_times) else np.nan,
+        "num_images": int(lens_system.image_number[0]),
+        "max_image_separation_arcsec": separations.max() if len(x_images) > 1 else np.nan,
     }
 
-    # --- Initialize Band-Dependent Keys ---
+    # --- Point source (AGN) ---
+    x_ps, y_ps = source_class.point_source_position
+    row.update({
+        "x_ps_position_arcsec": x_ps,
+        "y_ps_position_arcsec": y_ps,
+        "black_hole_mass_exponent": _agn_parameter(ps_class, "black_hole_mass_exponent"),
+        "agn_disk_eddington_ratio": _agn_parameter(ps_class, "eddington_ratio"),
+        "black_hole_spin": _agn_parameter(ps_class, "black_hole_spin"),
+        "agn_disk_inclination_angle": _agn_parameter(ps_class, "inclination_angle"),
+        "M_i": agn.get("M_i", np.nan),
+        "log_bolometric_luminosity": agn.get("log_bolometric_luminosity", np.nan),
+    })
+    row.update({name: agn.get(name, np.nan) for name in AGN_DRAWN_COLUMNS})
+    row.update({f"sf_inf_mag_{band}": agn.get(f"sf_inf_mag_{band}", np.nan) for band in all_bands})
+
+    # --- Host galaxy (source) light [single Sersic] ---
+    row["host_galaxy_type"] = str(agn.get("galaxy_type", ""))
+    row["host_stellar_mass"] = _agn_parameter(ps_class, "stellar_mass")
+    row["host_velocity_dispersion"] = _agn_parameter(ps_class, "vel_disp")
+    if es_class is not None:
+        x_host, y_host = es_class.extended_source_position
+        e1_host, e2_host = es_class.ellipticity
+        r_eff_host = es_class.angular_size
+    else:
+        x_host = y_host = e1_host = e2_host = r_eff_host = np.nan
+    e_host, q_host, phi_host, phi_host_lenstronomy = _shape(e1_host, e2_host)
+    row.update({
+        "x_host_position_arcsec": x_host,
+        "y_host_position_arcsec": y_host,
+        "host_light_R_eff_arcsec": r_eff_host,
+        "host_light_n_sersic": _sersic_index(es_class),
+        "host_light_e1": e1_host,
+        "host_light_e2": e2_host,
+        "host_light_ellipticity": e_host,
+        "host_light_axis_ratio": q_host,
+        "host_light_position_angle_deg": phi_host,
+        "host_light_position_angle_lenstronomy_deg": phi_host_lenstronomy,
+    })
+
+    # --- Deflector light [single Sersic] ---
+    e1_light, e2_light, e1_mass, e2_mass = lens_system.deflector_ellipticity()
+    e_light, q_light, phi_light, phi_light_lenstronomy = _shape(e1_light, e2_light)
+    x_deflector, y_deflector = lens_system.deflector_position
+    row.update({
+        "deflector_light_R_eff_arcsec": deflector_class.angular_size_light,
+        "deflector_light_n_sersic": _sersic_index(deflector_class.light.extended_source),
+        "deflector_light_e1": e1_light,
+        "deflector_light_e2": e2_light,
+        "deflector_light_ellipticity": e_light,
+        "deflector_light_axis_ratio": q_light,
+        "deflector_light_position_angle_deg": phi_light,
+        "deflector_light_position_angle_lenstronomy_deg": phi_light_lenstronomy,
+        "x_deflector_light_position_arcsec": light_kwargs[0].get("center_x", x_deflector),
+        "y_deflector_light_position_arcsec": light_kwargs[0].get("center_y", y_deflector),
+    })
+
+    # --- Deflector mass [EPL + external shear] ---
+    e_mass, q_mass, phi_mass, phi_mass_lenstronomy = _shape(e1_mass, e2_mass)
+    kappa_ext, gamma1_ext, gamma2_ext = lens_system.los_linear_distortions
+    gamma_ext, _, phi_ext, phi_ext_lenstronomy = _shape(gamma1_ext, gamma2_ext)
+    stellar_mass = lens_system.deflector_stellar_mass()
+    vel_disp = lens_system.deflector_velocity_dispersion()
+    stellar_mass_auger10 = stellar_mass_from_vel_disp(vel_disp)
+    row.update({
+        "x_deflector_mass_position_arcsec": x_deflector,
+        "y_deflector_mass_position_arcsec": y_deflector,
+        "deflector_stellar_mass": stellar_mass_auger10,
+        "deflector_stellar_mass_slsim": stellar_mass,
+        "deflector_pl_slope": _deflector_pl_slope(deflector_class),
+        "deflector_velocity_dispersion": vel_disp,
+        "deflector_mass_e1": e1_mass,
+        "deflector_mass_e2": e2_mass,
+        "deflector_mass_ellipticity": e_mass,
+        "deflector_mass_axis_ratio": q_mass,
+        "deflector_mass_position_angle_deg": phi_mass,
+        "deflector_mass_position_angle_lenstronomy_deg": phi_mass_lenstronomy,
+        "external_shear_gamma1": gamma1_ext,
+        "external_shear_gamma2": gamma2_ext,
+        "external_shear_amplitude": np.hypot(gamma1_ext, gamma2_ext),
+        "external_shear_position_angle_deg": phi_ext,
+        "external_shear_position_angle_lenstronomy_deg": phi_ext_lenstronomy,
+        "external_convergence": kappa_ext,
+    })
+
+    # --- Band-dependent magnitudes ---
+    per_image = {}
     for band in all_bands:
-        table_dict[f"unlensed_ps_mag_{band}"] = []
-        table_dict[f"faintest_image_ps_mag_{band}"] = []
-        table_dict[f"second_brightest_image_ps_mag_{band}"] = []
-        table_dict[f"brightest_image_ps_mag_{band}"] = []
-        
-        table_dict[f"unlensed_host_mag_{band}"] = []
-        table_dict[f"lensed_host_mag_{band}"] = []
-        
-        table_dict[f"deflector_mag_{band}"] = []
-
-        # Lensed PS magnitudes depend on BOTH band and image number
-        for img_num in range(1, max_num_images + 1):
-             table_dict[f"lensed_ps_mag_{band}_{img_num}"] = []
-
-    # --- Initialize Image-Dependent Keys (Geometry, Time, & Microlensing) ---
-    for img_num in range(1, max_num_images + 1):
-        table_dict[f"time_delay_days_{img_num}"] = []
-        table_dict[f"ps_magnification_{img_num}"] = []
-        table_dict[f"x_ps_image_positions_arcsec_{img_num}"] = []
-        table_dict[f"y_ps_image_positions_arcsec_{img_num}"] = []
-        
-        # New Microlensing keys
-        table_dict[f"kappa_star_{img_num}"] = []
-        table_dict[f"kappa_tot_{img_num}"] = []
-        table_dict[f"shear_{img_num}"] = []
-        table_dict[f"shear_angle_{img_num}"] = []
-
-    # -------------------------------------------------------------------------
-    # Populate properties
-    # -------------------------------------------------------------------------
-    for lens_system in lens_objects:
-        
-        source_index = 0  # assuming single source per lens system
-        
-        # Access internal classes
-        source_class = lens_system.source(source_index)
-        deflector_class = lens_system.deflector
-        ps_class = source_class.point_source
-        es_class = source_class.extended_source
-        
-        # --- System ---
-        table_dict["z_S"].append(lens_system.source_redshift_list[source_index])
-        table_dict["z_D"].append(lens_system.deflector_redshift)
-        table_dict["theta_E_arcsec"].append(lens_system.einstein_radius[source_index])
-        table_dict["num_images"].append(lens_system.image_number[source_index])
-
-        # --- Time Delay ---
-        arrival_times = lens_system.point_source_arrival_times()[source_index]
-        if len(arrival_times) > 0:
-            max_time_delay = np.max(arrival_times) - np.min(arrival_times)
-        else:
-            max_time_delay = np.nan
-        table_dict["max_time_delay_days"].append(max_time_delay)
-
-        # --- Point Source (AGN) ---
-        x_ps, y_ps = source_class.point_source_position
-        table_dict["x_ps_position_arcsec"].append(x_ps)
-        table_dict["y_ps_position_arcsec"].append(y_ps)
-        
-        # AGN property extraction
-        agn_kwargs = ps_class.source_dict
-        log_m_bh = agn_kwargs.get('black_hole_mass_exponent', np.nan)
-        f_edd = agn_kwargs.get('eddington_ratio', np.nan)
-        spin = agn_kwargs.get('black_hole_spin', np.nan)            
-        inc_angle = agn_kwargs.get('inclination_angle', np.nan)
-            
-        table_dict["black_hole_mass_exponent"].append(log_m_bh)
-        table_dict["agn_disk_eddington_ratio"].append(f_edd)
-        table_dict["black_hole_spin"].append(spin)
-        table_dict["agn_disk_inclination_angle"].append(inc_angle)
-
-        # --- Host Galaxy (Source) Light [SERSIC] ---
+        mags = np.asarray(lens_system.point_source_magnitude(band=band, lensed=True)[0], dtype=float)
+        ranked = np.sort(mags)
+        row[f"unlensed_ps_mag_{band}"] = lens_system.point_source_magnitude(band=band, lensed=False)[0]
+        row[f"faintest_image_ps_mag_{band}"] = ranked[-1] if len(ranked) else np.nan
+        row[f"third_brightest_image_ps_mag_{band}"] = ranked[2] if len(ranked) > 2 else np.nan
+        row[f"second_brightest_image_ps_mag_{band}"] = ranked[1] if len(ranked) > 1 else np.nan
+        row[f"brightest_image_ps_mag_{band}"] = ranked[0] if len(ranked) else np.nan
         if es_class is not None:
-            x_host, y_host = es_class.extended_source_position
-            
-            e1_host, e2_host = es_class.ellipticity
-            e_host = np.sqrt(e1_host**2 + e2_host**2)
-            q_host = (1 - e_host) / (1 + e_host)
-            phi_host = 0.5 * np.degrees(np.arctan2(e2_host, e1_host))
-            angular_size_host = es_class.angular_size
-        
+            row[f"unlensed_host_mag_{band}"] = lens_system.extended_source_magnitude(band=band, lensed=False)[0]
+            row[f"lensed_host_mag_{band}"] = lens_system.extended_source_magnitude(band=band, lensed=True)[0]
         else:
-            x_host, y_host = np.nan, np.nan
-            e1_host, e2_host = np.nan, np.nan
-            e_host = np.nan
-            q_host = np.nan
-            phi_host = np.nan
-            angular_size_host = np.nan
+            row[f"unlensed_host_mag_{band}"] = row[f"lensed_host_mag_{band}"] = np.nan
+        row[f"deflector_mag_{band}"] = lens_system.deflector_magnitude(band=band)
+        per_image[f"lensed_ps_mag_{band}"] = mags
+        per_image[f"deflector_surface_brightness_{band}"] = deflector_class.surface_brightness(
+            x_images, y_images, band=band
+        )
 
-        table_dict["x_host_position_arcsec"].append(x_host)
-        table_dict["y_host_position_arcsec"].append(y_host)
-        table_dict["host_light_R_eff_arcsec"].append(angular_size_host)
-        table_dict["host_light_n_sersic"].append(_sersic_index(es_class))
-        table_dict["host_light_e1"].append(e1_host)
-        table_dict["host_light_e2"].append(e2_host)
-        table_dict["host_light_ellipticity"].append(e_host)
-        table_dict["host_light_axis_ratio"].append(q_host)
-        table_dict["host_light_position_angle_deg"].append(phi_host)
+    # --- Microlensing: kappa_star spreads the Auger et al. (2010) M* implied by sigma like the deflector light, so
+    # the stars match the lens mass; kappa_star_slsim is SLSim's, with the SkyPy M*. Both are capped just below the
+    # total convergence, as in SLSim. ---
+    _, kappa_tot, shear, shear_angle = lens_system._microlensing_parameters_for_image_positions_single_source(
+        band=microlensing_band, source_index=0
+    )
+    kappa_tot = np.asarray(kappa_tot, dtype=float)
+    kappa_star_raw = np.asarray(lens_system.kappa_star(x_images, y_images), dtype=float)
+    kappa_star_raw_auger10 = kappa_star_raw * stellar_mass_auger10 / stellar_mass
+    per_image.update({
+        "time_delay_days": arrival_times,
+        "ps_magnification": magnifications,
+        "x_ps_image_positions_arcsec": x_images,
+        "y_ps_image_positions_arcsec": y_images,
+        "kappa_star": np.minimum(kappa_star_raw_auger10, kappa_tot - 1e-6),
+        "kappa_star_capped": (kappa_star_raw_auger10 >= kappa_tot - 1e-6).astype(float),
+        "kappa_star_slsim": np.minimum(kappa_star_raw, kappa_tot - 1e-6),
+        "kappa_star_slsim_capped": (kappa_star_raw >= kappa_tot - 1e-6).astype(float),
+        "kappa_tot": kappa_tot,
+        "shear": shear,
+        "shear_angle": shear_angle,
+    })
+    for name, values in per_image.items():
+        for img_num, value in enumerate(_slots(values, max_num_images), start=1):
+            row[f"{name}_{img_num}"] = value
+    return row
 
-        # --- Deflector Calculations ---
-        e1_light, e2_light, e1_mass, e2_mass = lens_system.deflector_ellipticity()
-        
-        e_mass = np.sqrt(e1_mass**2 + e2_mass**2)
-        q_mass = (1 - e_mass) / (1 + e_mass)
-        phi_mass = 0.5 * np.degrees(np.arctan2(e2_mass, e1_mass))
-        
-        e_light = np.sqrt(e1_light**2 + e2_light**2)
-        q_light = (1 - e_light) / (1 + e_light)
-        phi_light = 0.5 * np.degrees(np.arctan2(e2_light, e1_light))
 
-        kappa_ext, gamma1_ext, gamma2_ext = lens_system.los_linear_distortions
-        gamma_ext = np.sqrt(gamma1_ext**2 + gamma2_ext**2)
-        phi_ext = 0.5 * np.degrees(np.arctan2(gamma2_ext, gamma1_ext))
+def _lens_rows(lenses, all_bands, max_num_images, microlensing_band):
+    return [_lens_row(lens, all_bands, max_num_images, microlensing_band) for lens in lenses]
 
-        x_pos_deflector, y_pos_deflector = lens_system.deflector_position
 
-        # --- Deflector Mass (PEMD + EXTERNAL SHEAR) ---
-        table_dict["deflector_velocity_dispersion"].append(lens_system.deflector_velocity_dispersion())
-        table_dict["deflector_mass_e1"].append(e1_mass)
-        table_dict["deflector_mass_e2"].append(e2_mass)
-        table_dict["deflector_mass_ellipticity"].append(e_mass)
-        table_dict["deflector_mass_axis_ratio"].append(q_mass)
-        table_dict["deflector_mass_position_angle_deg"].append(phi_mass)
-        
-        table_dict["deflector_pl_slope"].append(_deflector_pl_slope(deflector_class))
-        
-        table_dict["deflector_stellar_mass"].append(lens_system.deflector_stellar_mass())
-        table_dict["x_deflector_mass_position_arcsec"].append(x_pos_deflector)
-        table_dict["y_deflector_mass_position_arcsec"].append(y_pos_deflector)
-        table_dict["external_convergence"].append(kappa_ext)
-        table_dict["external_shear_gamma1"].append(gamma1_ext)
-        table_dict["external_shear_gamma2"].append(gamma2_ext)
-        table_dict["external_shear_amplitude"].append(gamma_ext)
-        table_dict["external_shear_position_angle_deg"].append(phi_ext)
+def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5, n_jobs=1):
+    """One row per lens system: system, per-image, AGN, host and deflector properties.
 
-        # --- Deflector Light ---
-        table_dict["x_deflector_light_position_arcsec"].append(x_pos_deflector)
-        table_dict["y_deflector_light_position_arcsec"].append(y_pos_deflector)
-        table_dict["deflector_light_e1"].append(e1_light)
-        table_dict["deflector_light_e2"].append(e2_light)
-        table_dict["deflector_light_ellipticity"].append(e_light)
-        table_dict["deflector_light_axis_ratio"].append(q_light)
-        table_dict["deflector_light_position_angle_deg"].append(phi_light)
-        table_dict["deflector_light_R_eff_arcsec"].append(lens_system.deflector.angular_size_light)
-        
-        table_dict["deflector_light_n_sersic"].append(_sersic_index(deflector_class.light.extended_source))
-
-        # --- Image Properties Setup ---
-        num_images = lens_system.image_number[source_index]
-        ps_magnifications = lens_system.point_source_magnification()[source_index]
-        x_image_positions, y_image_positions = lens_system.point_source_image_positions()[source_index]
-        arrival_times = lens_system.point_source_arrival_times()[source_index]
-
-        # --- Microlensing Parameters ---
-        try:
-            k_star, k_tot, shear_mc, shear_angle_mc = lens_system._microlensing_parameters_for_image_positions_single_source(band="i", source_index=source_index)
-        except Exception:
-            k_star, k_tot, shear_mc, shear_angle_mc = [], [], [], []
-
-        # --- Band-Dependent Properties ---
-        for band in all_bands:
-            unlensed_ps_mag = lens_system.point_source_magnitude(band=band, lensed=False)[source_index]
-            table_dict[f"unlensed_ps_mag_{band}"].append(unlensed_ps_mag)
-
-            lensed_ps_mags = lens_system.point_source_magnitude(band=band, lensed=True)[source_index]
-
-            if len(lensed_ps_mags) > 0:
-                faintest_image_ps_mag = np.max(lensed_ps_mags)
-                brightest_image_ps_mag = np.min(lensed_ps_mags)
-                sorted_mags = np.sort(lensed_ps_mags)
-                second_brightest_image_ps_mag = sorted_mags[1] if len(sorted_mags) > 1 else np.nan
-            else:
-                faintest_image_ps_mag = np.nan
-                second_brightest_image_ps_mag = np.nan
-                brightest_image_ps_mag = np.nan
-
-            table_dict[f"faintest_image_ps_mag_{band}"].append(faintest_image_ps_mag)
-            table_dict[f"second_brightest_image_ps_mag_{band}"].append(second_brightest_image_ps_mag)
-            table_dict[f"brightest_image_ps_mag_{band}"].append(brightest_image_ps_mag)
-
-            if es_class is not None:
-                unlensed_host_mag = lens_system.extended_source_magnitude(band=band, lensed=False)[source_index]
-                lensed_host_mag = lens_system.extended_source_magnitude(band=band, lensed=True)[source_index]
-            else:
-                unlensed_host_mag = np.nan
-                lensed_host_mag = np.nan
-
-            table_dict[f"unlensed_host_mag_{band}"].append(unlensed_host_mag)
-            table_dict[f"lensed_host_mag_{band}"].append(lensed_host_mag)
-
-            deflector_mag = lens_system.deflector_magnitude(band=band)
-            table_dict[f"deflector_mag_{band}"].append(deflector_mag)
-
-            for img_num in range(1, max_num_images + 1):
-                if img_num <= num_images and img_num <= len(lensed_ps_mags):
-                    table_dict[f"lensed_ps_mag_{band}_{img_num}"].append(lensed_ps_mags[img_num-1])
-                else:
-                    table_dict[f"lensed_ps_mag_{band}_{img_num}"].append(np.nan)
-        
-        # --- Image-Dependent Properties (Geometry, Time, & Microlensing) ---
-        for img_num in range(1, max_num_images + 1):
-            if img_num <= num_images:
-                # Time Delays
-                val_td = arrival_times[img_num-1] if img_num <= len(arrival_times) else np.nan
-                table_dict[f"time_delay_days_{img_num}"].append(val_td)
-
-                # Magnifications
-                val_mag = ps_magnifications[img_num-1] if img_num <= len(ps_magnifications) else np.nan
-                table_dict[f"ps_magnification_{img_num}"].append(val_mag)
-
-                # Positions
-                val_x = x_image_positions[img_num-1] if img_num <= len(x_image_positions) else np.nan
-                val_y = y_image_positions[img_num-1] if img_num <= len(y_image_positions) else np.nan
-                table_dict[f"x_ps_image_positions_arcsec_{img_num}"].append(val_x)
-                table_dict[f"y_ps_image_positions_arcsec_{img_num}"].append(val_y)
-                
-                # Microlensing
-                val_k_star = k_star[img_num-1] if img_num <= len(k_star) else np.nan
-                val_k_tot = k_tot[img_num-1] if img_num <= len(k_tot) else np.nan
-                val_shear = shear_mc[img_num-1] if img_num <= len(shear_mc) else np.nan
-                val_shear_ang = shear_angle_mc[img_num-1] if img_num <= len(shear_angle_mc) else np.nan
-                
-                table_dict[f"kappa_star_{img_num}"].append(val_k_star)
-                table_dict[f"kappa_tot_{img_num}"].append(val_k_tot)
-                table_dict[f"shear_{img_num}"].append(val_shear)
-                table_dict[f"shear_angle_{img_num}"].append(val_shear_ang)
-
-            else:
-                table_dict[f"time_delay_days_{img_num}"].append(np.nan)
-                table_dict[f"ps_magnification_{img_num}"].append(np.nan)
-                table_dict[f"x_ps_image_positions_arcsec_{img_num}"].append(np.nan)
-                table_dict[f"y_ps_image_positions_arcsec_{img_num}"].append(np.nan)
-                table_dict[f"kappa_star_{img_num}"].append(np.nan)
-                table_dict[f"kappa_tot_{img_num}"].append(np.nan)
-                table_dict[f"shear_{img_num}"].append(np.nan)
-                table_dict[f"shear_angle_{img_num}"].append(np.nan)
-
-    return Table(table_dict)
+    :param lens_objects: SLSim Lens objects
+    :param all_bands: bands to extract magnitudes for (default LSST griz y)
+    :param max_num_images: number of per-image slots; empty slots are NaN
+    :param n_jobs: worker processes; -1 uses every available core. Workers are spawned, not forked, because
+        forking after JAX has started its threads can deadlock.
+    :return: astropy Table, columns described in data/lensed-agn_catalog_data_column_descriptions.txt
+    """
+    if all_bands is None:
+        all_bands = ["g", "r", "i", "z", "y"]
+    # kappa_star uses the deflector light profile in one band; any band in the catalog will do
+    microlensing_band = "i" if "i" in all_bands else all_bands[0]
+    lens_objects = list(lens_objects)
+    if n_jobs == -1:
+        n_jobs = len(os.sched_getaffinity(0))
+    n_jobs = max(1, min(n_jobs, len(lens_objects) // 20))
+    if n_jobs == 1:
+        rows = _lens_rows(lens_objects, all_bands, max_num_images, microlensing_band)
+    else:
+        chunks = np.array_split(np.arange(len(lens_objects)), 4 * n_jobs)
+        with ProcessPoolExecutor(n_jobs, mp_context=multiprocessing.get_context("spawn")) as pool:
+            futures = [pool.submit(_lens_rows, [lens_objects[i] for i in chunk], all_bands, max_num_images,
+                                   microlensing_band) for chunk in chunks if len(chunk)]
+            rows = [row for future in futures for row in future.result()]
+    table = Table(rows=rows)
+    if len(table):
+        # SLSim's id is built from the deflector position at 4 decimals and repeats in large samples
+        table["lens_id"] = [f"{index:06d}_{lens_id}" for index, lens_id in enumerate(table["lens_id"])]
+    if len(table) and "i" in all_bands:
+        table["om10_selected"] = om10_selected(table, max_num_images=max_num_images)
+    return table
 
 #################################################################################################################
 ## PLOTTING AND IMAGE GENERATION UTILITIES
