@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# FITS headers are ASCII, so text=auto would treat catalogs as text and could rewrite line endings in the binary data
+*.fits binary
