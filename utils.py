@@ -15,27 +15,27 @@ import corner
 #################################################################################################################
 # Column names and their meaning: data/lensed-agn_catalog_data_column_descriptions.txt
 
-# References for the relations below:
+# References for the relations below (and in main.ipynb; full list in the column descriptions file):
 #   Auger et al. (2010), ApJ 724, 511, arXiv:1007.2880 (SLACS X)
-#   Suberlak, Ivezic & MacLeod (2021), ApJ 907, 96, arXiv:2012.06524
+#   Suberlak, Ivezic & MacLeod (2021), ApJ 907, 96, arXiv:2012.12907
 #   MacLeod et al. (2010), ApJ 721, 1014, arXiv:1004.0276
 #   Burke et al. (2021), Science 373, 789, arXiv:2108.05389
 #   Oguri & Marshall (2010), MNRAS 405, 2579, arXiv:1001.2037
+#   Shen et al. (2011), ApJS 194, 45, arXiv:1006.5178
+#   Urry & Padovani (1995), PASP 107, 803, arXiv:astro-ph/9506063
 
 # Auger et al. (2010), Table 2, fit without intrinsic scatter, Chabrier IMF:
-# log10(sigma / km s^-1) = a log10(M* / 1e11 Msun) + b
+# log10(sigma / km s^-1) = a log10(M* / 1e11 Msun) + b. Their sigma is sigma_{e/2} (within R_eff / 2).
 AUGER10_SIGMA_MSTAR = (0.24, 2.32)
 
-# DRW scaling relations, log10 f = A + B log10(lambda_rest / 4000 A) + C (M_i + 23) + D log10(M_BH / 1e9 Msun),
-# with tau in rest-frame days and SF_inf in mag: Suberlak et al. (2021) and MacLeod et al. (2010, eq. 7, mean over
-# bands), coefficients as adopted in slagn-adp. Not yet checked against the papers: the table they come from and
-# whether the fits use M_i K-corrected to z=0 or z=2. SLSim's M_i is M_i(z=2), 0.596 mag brighter than M_i(z=0)
-# (Richards et al. 2006), which would shift log SF_inf by about C * 0.6 ~ 0.07 dex.
+# DRW scaling relation, log10 f = A + B log10(lambda_rest / 4000 A) + C (M_i + 23) + D log10(M_BH / 1e9 Msun),
+# with tau in rest-frame days and SF_inf in mag (MacLeod et al. 2010, eq. 7). Coefficients (A, B, C, D) from
+# Suberlak et al. (2021), Table 2, rows "S20, SDSS-PS1"; B is fixed there to the MacLeod et al. (2010) wavelength
+# fits. Suberlak et al. fit M_i K-corrected to z=2 (from Shen et al. 2011), the same convention as SLSim's M_i(z=2).
 VARIABILITY_RELATIONS = {
     "suberlak21": {"tau": (2.597, 0.17, 0.035, 0.141), "sf_inf": (-0.476, -0.479, 0.118, 0.118)},
-    "macleod10": {"tau": (2.4, 0.17, 0.03, 0.21), "sf_inf": (-0.51, -0.479, 0.131, 0.18)},
 }
-# Burke et al. (2021): tau_rest = 107 d (M_BH / 1e8 Msun)^0.38
+# Burke et al. (2021), eq. 1: tau_rest = 107 d (M_BH / 1e8 Msun)^0.38
 BURKE21_TAU = (107.0, 0.38)
 # Scatter of log tau and log SF_inf about the Suberlak et al. (2021) mean at fixed (M_BH, M_i, z). Not a published
 # value: MacLeod et al. (2010)'s joint i-band Gaussian conditioned on (M_BH, M_i, z), less their fitting-error share.
@@ -77,7 +77,7 @@ def assign_agn_properties(quasars, bands, seed=None, max_inclination_deg=60.0):
     (unobscured) AGN in the unified model (Urry & Padovani 1995, PASP 107, 803), not a fitted relation. The disk
     position angle is uniform and the spin is 0. The DRW damping timescale and SF_inf are drawn jointly about the
     Suberlak et al. (2021) relation at rest-frame 4000 A and scaled to each band with its wavelength dependence;
-    the MacLeod et al. (2010) and Burke et al. (2021) means are kept for comparison.
+    the Burke et al. (2021) timescale mean is kept for comparison.
     The columns travel with each quasar into the SLSim source objects, so every lens of a quasar shares them.
     """
     rng = np.random.default_rng(seed)
@@ -114,8 +114,7 @@ def assign_agn_properties(quasars, bands, seed=None, max_inclination_deg=60.0):
 
 AGN_DRAWN_COLUMNS = [
     "agn_disk_position_angle_deg", "tau_rest_days", "sf_inf_mag",
-    "log10_tau_suberlak21", "log10_sf_inf_suberlak21", "log10_tau_macleod10", "log10_sf_inf_macleod10",
-    "log10_tau_burke21", "break_timescale_days",
+    "log10_tau_suberlak21", "log10_sf_inf_suberlak21", "log10_tau_burke21", "break_timescale_days",
 ]
 
 
@@ -157,10 +156,11 @@ def _slots(values, count):
 
 
 def om10_selected(table, band="i", limit=23.3, min_separation_arcsec=0.5, min_flux_ratio=0.1, max_num_images=5):
-    """Oguri & Marshall (2010, Section 2.2) selection: the second-brightest image of a double or triple (with a flux ratio
-    of at least 0.1 for doubles) or the third-brightest of a quad brighter than ``limit``, separation >= 0.5"."""
+    """Oguri & Marshall (2010, Section 2.2) selection: the fainter image of a double (with a flux ratio of at least 0.1)
+    or the third-brightest of a quad or naked-cusp (three-image) lens brighter than ``limit``, separation >= 0.5".
+    ``limit`` defaults to the LSST i-band 10-sigma single-visit depth of their Table 1."""
     n_images = np.asarray(table["num_images"])
-    faint = np.where(n_images >= 4, table[f"third_brightest_image_ps_mag_{band}"],
+    faint = np.where(n_images >= 3, table[f"third_brightest_image_ps_mag_{band}"],
                      table[f"second_brightest_image_ps_mag_{band}"])
     abs_mu = np.abs(np.stack([np.asarray(table[f"ps_magnification_{k}"], dtype=float)
                               for k in range(1, max_num_images + 1)]))
@@ -185,7 +185,6 @@ def _lens_row(lens_system, all_bands, max_num_images, microlensing_band):
     separations = np.hypot(x_images[:, None] - x_images[None], y_images[:, None] - y_images[None])
 
     row = {
-        "lens_id": lens_system.generate_id(),
         "z_S": lens_system.source_redshift_list[0],
         "z_D": lens_system.deflector_redshift,
         "theta_E_arcsec": lens_system.einstein_radius[0],
@@ -332,12 +331,14 @@ def _lens_rows(lenses, all_bands, max_num_images, microlensing_band):
     return [_lens_row(lens, all_bands, max_num_images, microlensing_band) for lens in lenses]
 
 
-def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5, n_jobs=1):
+def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5, n_jobs=1, id_prefix="lens"):
     """One row per lens system: system, per-image, AGN, host and deflector properties.
 
     :param lens_objects: SLSim Lens objects
     :param all_bands: bands to extract magnitudes for (default LSST griz y)
     :param max_num_images: number of per-image slots; empty slots are NaN
+    :param id_prefix: lens_id is "<id_prefix>_<row index>"; give each catalog its own prefix (e.g. the survey key) so
+        ids are unique across catalogs. Row i is lens_objects[i], so the id also indexes the saved Lens objects.
     :param n_jobs: worker processes; -1 uses every available core. Workers are spawned, not forked, because
         forking after JAX has started its threads can deadlock.
     :return: astropy Table, columns described in data/lensed-agn_catalog_data_column_descriptions.txt
@@ -360,8 +361,8 @@ def extract_lensed_agn_properties(lens_objects, all_bands=None, max_num_images=5
             rows = [row for future in futures for row in future.result()]
     table = Table(rows=rows)
     if len(table):
-        # SLSim's id is built from the deflector position at 4 decimals and repeats in large samples
-        table["lens_id"] = [f"{index:06d}_{lens_id}" for index, lens_id in enumerate(table["lens_id"])]
+        # SLSim's Lens.generate_id is built from the deflector position at 4 decimals and repeats in large samples
+        table.add_column([f"{id_prefix}_{index:06d}" for index in range(len(table))], name="lens_id", index=0)
     if len(table) and "i" in all_bands:
         table["om10_selected"] = om10_selected(table, max_num_images=max_num_images)
     return table

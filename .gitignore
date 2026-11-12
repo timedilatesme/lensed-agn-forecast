@@ -184,3 +184,7 @@ data/dr16q_prop_*.fits.gz
 data/dr16q_*.fits
 data/hosts_*deg2.fits
 data/shen2011_dr7.fits
+# Quasar source cache (673 MB, over GitHub's file limit); main.ipynb regenerates it (seed=42, seed=11) when missing
+data/quasar_source_catalog.fits
+# HST_vs_Euclid.ipynb quasar cache; the notebook regenerates it when missing
+extra/qso_table.fits

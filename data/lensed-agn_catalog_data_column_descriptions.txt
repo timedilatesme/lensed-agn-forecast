@@ -5,15 +5,17 @@
 # uses (-e1, e2), given by the '*_position_angle_lenstronomy_deg' columns.
 
 # --- System Properties ---
-# 'lens_id',                                     # (row index in the catalog + SLSim's Lens.generate_id, unique within a catalog)
+# 'lens_id',                                     # (<survey key>_<row index>, e.g. 'roman_medium_000042'; unique across all catalogs;
+#                                                #  the row index is the position of the Lens object in the matching *_lens_objects.pkl.gz)
 # 'z_S', 'z_D',
 # 'theta_E_arcsec',                              # (Einstein radius, Lens.einstein_radius, includes the external-convergence rescale)
 # 'theta_E_lens_model_arcsec',                   # (Einstein radius of the EPL in the lenstronomy lens model, no rescale)
 # 'max_time_delay_days',
 # 'num_images',
 # 'max_image_separation_arcsec',                 # (largest separation between two images)
-# 'om10_selected',                               # (Oguri & Marshall 2010 [OM10] cuts: 2nd-brightest image of doubles/triples, 3rd-brightest
-#                                                #  of quads, i <= 23.3; separation >= 0.5"; doubles need a flux ratio >= 0.1)
+# 'om10_selected',                               # (Oguri & Marshall 2010 [OM10] Sec. 2.2 cuts: fainter image of doubles, 3rd-brightest of
+#                                                #  quads and naked-cusp triples, i <= 23.3 (LSST depth, OM10 Table 1); separation >= 0.5";
+#                                                #  doubles need a flux ratio >= 0.1)
 
 # --- Point Source (AGN) ---
 # 'x_ps_position_arcsec',
@@ -29,9 +31,9 @@
 # 'x_ps_image_positions_arcsec_<image#>',
 # 'y_ps_image_positions_arcsec_<image#>',
 # 'M_i',                                         # (absolute i magnitude M_i(z=2) from the OM10 quasar luminosity function with
-#                                                #  the Richards et al. 2005 break and Richards et al. 2006 K-correction; SLSim)
+#                                                #  the Richards et al. 2005 break and Richards et al. 2006a K-correction; SLSim)
 # 'log_bolometric_luminosity',                   # (log10 L_bol [erg/s] from M_i via L3000 (zero point fitted to Wu & Shen 2022)
-#                                                #  and L_bol = 5.15 L3000 (Richards et al. 2006); SLSim)
+#                                                #  and L_bol = 5.15 L3000 (Richards et al. 2006b SED, as used by Shen et al. 2011); SLSim)
 # 'black_hole_mass_exponent',                    # (log10 M_BH [M_sun], SLSim host matching conditioned on M_i and the host: red hosts
 #                                                #  M-sigma (Kormendy & Ho 2013), blue hosts M-M* (Reines & Volonteri 2015))
 # 'agn_disk_eddington_ratio',                    # (Eddington ratio, linear; lognormal prior, mean log -1.15, width 0.30 dex,
@@ -43,12 +45,13 @@
 # 'tau_rest_days',                               # (DRW damping timescale, rest frame, drawn about Suberlak et al. 2021 with
 #                                                #  0.15 dex scatter, correlation 0.16 with SF_inf; the scatter is approximate,
 #                                                #  from MacLeod et al. 2010, not a published value)
-# 'sf_inf_mag',                                  # (DRW asymptotic structure function SF_inf at rest 4000 A, Suberlak et al. 2021,
-#                                                #  0.04 dex scatter, drawn jointly with tau)
+# 'sf_inf_mag',                                  # (DRW asymptotic structure function SF_inf at rest 4000 A, Suberlak et al. 2021
+#                                                #  Table 2 "S20, SDSS-PS1"; 0.04 dex scatter, drawn jointly with tau)
 # 'sf_inf_mag_<band>',                           # (SF_inf at the band's rest-frame wavelength, Suberlak et al. 2021 wavelength scaling)
-# 'log10_tau_suberlak21', 'log10_sf_inf_suberlak21', # (Suberlak et al. 2021 means, no scatter; tau in days, SF_inf in mag)
-# 'log10_tau_macleod10', 'log10_sf_inf_macleod10',   # (MacLeod et al. 2010 means)
-# 'log10_tau_burke21',                           # (Burke et al. 2021 mean, tau = 107 d (M_BH / 1e8 M_sun)^0.38)
+# 'log10_tau_suberlak21', 'log10_sf_inf_suberlak21', # (Suberlak et al. 2021 Table 2 "S20, SDSS-PS1" means, no scatter; tau in
+#                                                #  days, SF_inf in mag; relation form of MacLeod et al. 2010 eq. 7, with M_i(z=2)
+#                                                #  as in Suberlak et al. 2021, matching SLSim)
+# 'log10_tau_burke21',                           # (Burke et al. 2021 eq. 1 mean, tau = 107 d (M_BH / 1e8 M_sun)^0.38)
 # 'break_timescale_days',                        # (observer-frame DRW break, 2 pi tau_rest (1 + z_S))
 
 # --- Host Galaxy (Source) Light [SINGLE SERSIC] ---
@@ -117,19 +120,31 @@
 # 'shear_angle_<image#>'                # (total shear angle in radians, arctan2(gamma2, gamma1) = 2 phi, lenstronomy frame)
 # -----------------------------------------------------------------------------------------------------------------------------
 
+# --- Survey Settings (main.ipynb) ---
+# LSST: 20,000 deg2, second-brightest image i < 23.3, separations 0.5-4"   (Oguri & Marshall 2010, Table 1 and Sec. 2.2)
+# Roman Medium Tier: 2,415 deg2, F106 < 26.5, F129 < 26.4, F158 < 26.4     (Roman HLWAS DC report 2024, Table 1)
+# Roman Wide Tier: 2,702 deg2, F158 < 26.2                                 (Roman HLWAS DC report 2024, Table 1)
+# Euclid Wide: 14,500 deg2, VIS < 26.2; NISP Y/J/H < 24.5 sub-sample       (Scaramella et al. 2022)
+# Roman Medium Tier (2029) 500 deg2 and Roman NANCY 1,000 deg2 with F158 < 25.5 are survey assumptions of this work.
+
 # --- References ---
 # Auger et al. (2010), ApJ 724, 511, arXiv:1007.2880                    (sigma-M* relation; EPL slope distribution)
 # Bernardi et al. (2010), MNRAS 404, 2087, arXiv:0910.1093              (SDSS velocity dispersion function)
 # Burke et al. (2021), Science 373, 789, arXiv:2108.05389               (DRW timescale vs M_BH)
 # Kormendy & Ho (2013), ARA&A 51, 511, arXiv:1304.7762                  (M-sigma, red hosts)
-# MacLeod et al. (2010), ApJ 721, 1014, arXiv:1004.0276                 (DRW scaling relations)
+# MacLeod et al. (2010), ApJ 721, 1014, arXiv:1004.0276                 (DRW relation form, eq. 7; wavelength slopes B; DRW scatter)
 # Oguri & Marshall (2010), MNRAS 405, 2579, arXiv:1001.2037             (quasar luminosity function; OM10 selection)
 # Reines & Volonteri (2015), ApJ 813, 82, arXiv:1508.06274              (M-M*, blue hosts)
+# Roman HLWAS Definition Committee (2024), Recommendations report, Table 1; appendix of the ROTAC final report,
+#   arXiv:2505.10574                                                    (Roman Medium / Wide Tier areas and depths)
 # Richards et al. (2005), MNRAS 360, 839, arXiv:astro-ph/0504300        (luminosity function break magnitude)
-# Richards et al. (2006), AJ 131, 2766, arXiv:astro-ph/0601434          (K-correction, M_i(z=2), bolometric correction)
-# Suberlak, Ivezic & MacLeod (2021), ApJ 907, 96, arXiv:2012.06524      (DRW scaling relations, SDSS-PS1)
+# Richards et al. (2006a), AJ 131, 2766, arXiv:astro-ph/0601434         (K-correction, M_i(z=2))
+# Richards et al. (2006b), ApJS 166, 470, arXiv:astro-ph/0601558        (mean quasar SED; bolometric correction 5.15 L3000)
+# Scaramella et al. (2022), A&A 662, A112, arXiv:2108.01201             (Euclid Wide Survey: 14,500 deg2, VIS 26.2, NISP 24.5)
+# Shen et al. (2011), ApJS 194, 45, arXiv:1006.5178                     (BC_3000 = 5.15 from the Richards et al. 2006b SED)
+# Suberlak, Ivezic & MacLeod (2021), ApJ 907, 96, arXiv:2012.12907      (DRW scaling relations, SDSS-PS1, Table 2)
 # Urry & Padovani (1995), PASP 107, 803, arXiv:astro-ph/9506063         (unified model; motivates the 60 deg inclination limit)
 # Wu & Shen (2022), ApJS 263, 42, arXiv:2209.03987                      (L3000 zero point, Eddington ratio distribution)
 #
-# Open check: the DRW coefficients (Suberlak et al. 2021, MacLeod et al. 2010) are applied to SLSim's M_i(z=2); whether
-# those fits use M_i K-corrected to z=0 or z=2 has not been verified (a 0.596 mag offset, ~0.07 dex in SF_inf).
+# M_i convention: SLSim's M_i is M_i(z=2) (Richards et al. 2006a), the convention of the Suberlak et al. (2021) fit (M_i
+# K-corrected to z=2 from Shen et al. 2011), so the DRW relation is applied without a K-correction offset.
